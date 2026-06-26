@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "n8n-mcp-admin"
+version = "1.0.0"
+description = "n8n MCP Admin backend service for managing n8n MCP server configuration"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp-admin-core",
+    "httpx",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["n8n_mcp_admin"]
