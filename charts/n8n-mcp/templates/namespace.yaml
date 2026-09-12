@@ -1,0 +1,15 @@
+{{- /*
+An MCP release normally joins the namespace of the app it serves, so
+namespace.create defaults to false. A Namespace equal to the release namespace
+is never rendered: Helm keeps its release record there, so it is created with
+--create-namespace instead and `helm uninstall` can never delete it.
+*/ -}}
+{{- if and .Values.namespace.create (ne (include "n8n-mcp.ns" .) .Release.Namespace) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- include "n8n-mcp.objectLabels" (dict "ctx" . "extra" (dict)) | nindent 4 }}
+  {{- include "n8n-mcp.keepAnnotations" . | nindent 2 }}
+{{- end }}

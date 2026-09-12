@@ -1,0 +1,102 @@
+{{- /*
+`helm test` smoke pod. Read-only, no writes to n8n:
+  - the proxy answers and returns 404 for every path but the secret one
+  - the MCP server's own health endpoint is 200
+  - the MCP endpoint refuses an unauthenticated call (the token gate works)
+  - through the secret path (when it is known) an MCP `initialize` succeeds,
+    which proves nginx injects the bearer token
+Uses the n8n-mcp image: it already ships node, so nothing extra is pulled.
+*/ -}}
+{{- if and .Values.tests.enabled (eq .Values.mode "upstream") }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- include "n8n-mcp.objectLabels" (dict "ctx" . "extra" (dict "app.kubernetes.io/component" "smoke-test")) | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    # Kept until the next `helm test`, so `helm test --logs` can always read it.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: smoke
+      image: {{ .Values.mcp.image.repository }}:{{ .Values.mcp.image.tag }}
+      command: [node, -e]
+      args:
+        - |
+          const mcp = `http://${process.env.MCP_HOST}:${process.env.MCP_PORT}`;
+          const proxy = `http://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+          const secret = process.env.PATH_SECRET || "";
+          const ok = [];
+          const req = async (url, init) => {
+            const r = await fetch(url, init);
+            return { status: r.status, body: await r.text() };
+          };
+          const initialize = {
+            jsonrpc: "2.0", id: 1, method: "initialize",
+            params: { protocolVersion: "2024-11-05", capabilities: {},
+                      clientInfo: { name: "helm-test", version: "1" } },
+          };
+          (async () => {
+            let r = await req(`${mcp}${process.env.MCP_HEALTH_PATH}`);
+            if (r.status !== 200) throw new Error(`mcp health: ${r.status} ${r.body}`);
+            ok.push(`mcp ${process.env.MCP_HEALTH_PATH} 200`);
+
+            r = await req(`${proxy}/`);
+            if (r.status !== 404) throw new Error(`proxy /: expected 404, got ${r.status}`);
+            ok.push("proxy / 404");
+
+            if (process.env.PROXY_HEALTH === "true") {
+              r = await req(`${proxy}/health`);
+              if (r.status !== 200) throw new Error(`proxy /health: ${r.status}`);
+              ok.push("proxy /health 200");
+            }
+
+            r = await req(`${mcp}/mcp`, {
+              method: "POST",
+              headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+              body: JSON.stringify(initialize),
+            });
+            if (r.status !== 401) throw new Error(`unauthenticated /mcp: expected 401, got ${r.status}`);
+            ok.push("unauthenticated /mcp 401");
+
+            if (secret) {
+              r = await req(`${proxy}/private_${secret}/mcp`, {
+                method: "POST",
+                headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+                body: JSON.stringify(initialize),
+              });
+              if (r.status !== 200) throw new Error(`proxied /mcp: ${r.status} ${r.body}`);
+              if (!r.body.includes("serverInfo")) throw new Error(`proxied /mcp body: ${r.body}`);
+              ok.push("proxied MCP initialize 200 (nginx injects the token)");
+            } else {
+              ok.push("secret path not known to the test - skipped");
+            }
+            console.log(ok.join("\n"));
+            console.log("SMOKE OK");
+          })().catch((e) => { console.error(String(e)); process.exit(1); });
+      env:
+        - name: MCP_HOST
+          value: {{ include "n8n-mcp.serviceName" . }}
+        - name: MCP_PORT
+          value: {{ .Values.mcp.port | quote }}
+        - name: MCP_HEALTH_PATH
+          value: {{ .Values.tests.mcpHealthPath | quote }}
+        - name: PROXY_HOST
+          value: {{ include "n8n-mcp.proxyServiceHost" . }}
+        - name: PROXY_PORT
+          value: {{ .Values.proxy.port | quote }}
+        - name: PROXY_HEALTH
+          value: {{ and .Values.tests.proxyHealth .Values.proxy.config.healthLocation | quote }}
+        - name: PATH_SECRET
+          value: {{ default .Values.proxy.config.pathSecret .Values.tests.pathSecret | quote }}
+      resources:
+        {{- toYaml .Values.tests.resources | nindent 8 }}
+{{- end }}

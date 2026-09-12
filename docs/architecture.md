@@ -156,7 +156,9 @@ docker compose up -d
 
 ### Kubernetes
 
-Deploy as a Deployment with RBAC, health probes, and resource limits. See `k8s-deploy.yaml`.
+Deploy with the Helm chart in `charts/n8n-mcp` (see its README): the upstream
+`n8n-mcp` server behind an nginx path-secret proxy (`mode: upstream`), or this
+bundle image (`mode: bundle`). The old hardcoded `k8s-deploy.yaml` was removed.
 
 ## Security Model
 

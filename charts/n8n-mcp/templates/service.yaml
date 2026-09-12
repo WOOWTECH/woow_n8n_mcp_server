@@ -1,0 +1,67 @@
+{{- /*
+Services. With the nginx sidecar one Service carries both ports (the cindytech
+instance); with a standalone proxy each Deployment gets its own Service (the
+woowtech-odoo instance). Only the proxy port should ever be routed from outside.
+*/ -}}
+{{- if eq .Values.mode "upstream" }}
+{{- $sidecar := include "n8n-mcp.proxyIsSidecar" . }}
+{{- if and $sidecar (not .Values.mcp.portName) }}
+{{- fail "mcp.portName and proxy.portName must be set when proxy.mode=sidecar: a multi-port Service needs named ports" }}
+{{- end }}
+{{- $labels := include "n8n-mcp.objectLabels" (dict "ctx" . "extra" .Values.service.labels) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "n8n-mcp.serviceName" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "n8n-mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.mcp.port }}
+      {{- with .Values.mcp.portName }}
+      name: {{ . }}
+      {{- end }}
+      protocol: TCP
+      targetPort: {{ .Values.mcp.port }}
+    {{- if $sidecar }}
+    - port: {{ .Values.proxy.port }}
+      {{- with .Values.proxy.portName }}
+      name: {{ . }}
+      {{- end }}
+      protocol: TCP
+      targetPort: {{ .Values.proxy.port }}
+    {{- end }}
+{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "standalone") }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "n8n-mcp.proxyServiceName" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "n8n-mcp.proxySelectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.proxy.port }}
+      {{- with .Values.proxy.portName }}
+      name: {{ . }}
+      {{- end }}
+      protocol: TCP
+      targetPort: {{ .Values.proxy.port }}
+{{- end }}
+{{- end }}

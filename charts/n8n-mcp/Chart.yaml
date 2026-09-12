@@ -1,0 +1,24 @@
+apiVersion: v2
+name: n8n-mcp
+description: >-
+  n8n MCP server on K3s: the upstream ghcr.io/czlonkowski/n8n-mcp HTTP server
+  behind an nginx path-secret proxy that injects the bearer token, one release
+  per instance. Optionally (mode=bundle) this repository's own admin-GUI image
+  instead of the upstream server.
+type: application
+version: 1.0.0
+appVersion: "latest"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - n8n
+  - mcp
+  - model-context-protocol
+  - proxy
+home: https://github.com/WOOWTECH/woow_n8n_mcp_server
+sources:
+  - https://github.com/WOOWTECH/woow_n8n_mcp_server
+  - https://github.com/czlonkowski/n8n-mcp
+  - https://github.com/WOOWTECH/Woow_k3s_n8n
+maintainers:
+  - name: WoowTech
+    url: https://github.com/WOOWTECH

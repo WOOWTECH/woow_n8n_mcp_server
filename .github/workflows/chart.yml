@@ -1,0 +1,210 @@
+name: chart
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  CHART: charts/n8n-mcp
+  # Dummy values only: exercises templates/secrets.yaml and the proxy ConfigMap
+  # without any real key.
+  N8N: mcp.n8nApiUrl=http://n8n:5678
+  SECRETS: secrets.create=true,secrets.n8nApiKey=x,secrets.mcpAuthToken=x,proxy.config.create=true,proxy.config.pathSecret=x,proxy.config.authToken=x
+  KUBECONFORM_VERSION: v0.6.7
+  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.5
+
+      - name: helm lint
+        run: |
+          helm lint $CHART --set "$N8N"
+          helm lint $CHART -f deploy/woow-k3s/n8n-mcp-woowtech-odoo.yaml
+          helm lint $CHART -f deploy/woow-k3s/cindytech-n8n-mcp.yaml
+          helm lint $CHART --set "$N8N,$SECRETS"
+          helm lint $CHART --set "$N8N,mode=bundle"
+
+      - name: helm template (every values combination)
+        run: |
+          mkdir -p /tmp/r
+          # Instance values of everything that runs on woow-k3s.
+          helm template n8n-mcp $CHART -n woowtech-odoo \
+            -f deploy/woow-k3s/n8n-mcp-woowtech-odoo.yaml      > /tmp/r/instance-woowtech-odoo.yaml
+          helm template cindytech-n8n-mcp $CHART -n cindytech \
+            -f deploy/woow-k3s/cindytech-n8n-mcp.yaml          > /tmp/r/instance-cindytech.yaml
+          # Chart defaults (sidecar proxy, probes on, secrets out of band).
+          helm template n8n-mcp $CHART -n mcp --set "$N8N"      > /tmp/r/default.yaml
+          # Fresh install: the chart creates the Secret and the proxy config.
+          helm template n8n-mcp $CHART -n mcp --set "$N8N,$SECRETS" > /tmp/r/secrets.yaml
+          helm template n8n-mcp $CHART -n mcp --set "$N8N,$SECRETS" \
+            --set keepOnUninstall=false                        > /tmp/r/no-keep.yaml
+          # Own namespace + standalone proxy + no smoke pod.
+          helm template n8n-mcp $CHART -n other --set "$N8N,$SECRETS" \
+            --set namespace.create=true,namespace.name=n8n-mcp,proxy.mode=standalone,tests.enabled=false \
+                                                               > /tmp/r/standalone-ns.yaml
+          # No proxy at all.
+          helm template n8n-mcp $CHART -n mcp --set "$N8N,$SECRETS" \
+            --set proxy.enabled=false                          > /tmp/r/no-proxy.yaml
+          # This repository's own image.
+          helm template n8n-mcp $CHART -n mcp --set "$N8N,mode=bundle" > /tmp/r/bundle.yaml
+          helm template n8n-mcp $CHART -n mcp --set "$N8N,mode=bundle" \
+            --set bundle.persistence.enabled=false             > /tmp/r/bundle-nopvc.yaml
+          # The shape of a test install (ht-* namespace, no tunnel anywhere).
+          helm template n8n-mcp $CHART -n ht-n8n-mcp --set "$N8N,$SECRETS" \
+            --set tests.pathSecret=x                           > /tmp/r/test-install.yaml
+          wc -l /tmp/r/*.yaml
+
+      - name: Every template is tracked and renders
+        run: |
+          # An unanchored .gitignore pattern once kept a templates/secrets.yaml
+          # out of git in a sibling repo.
+          for f in $(find $CHART/templates -type f); do
+            if git check-ignore --no-index -q "$f"; then echo "::error::$f is matched by .gitignore"; exit 1; fi
+          done
+          for f in $(find $CHART/templates -type f -name '*.yaml'); do
+            rel="${f#$CHART/}"
+            grep -q "^# Source: n8n-mcp/$rel\$" /tmp/r/*.yaml || { echo "::error::$rel never renders"; exit 1; }
+          done
+          echo "every template is tracked and renders"
+
+      - name: kubeconform (schema validation)
+        run: |
+          curl -sSLo /tmp/kc.tgz https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz
+          echo "${KUBECONFORM_SHA256}  /tmp/kc.tgz" | sha256sum -c -
+          tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary /tmp/r/*.yaml
+
+      - name: Required values are enforced
+        run: |
+          if helm template n8n-mcp $CHART > /dev/null 2>&1; then
+            echo "::error::mcp.n8nApiUrl is not enforced"; exit 1
+          fi
+          helm template n8n-mcp $CHART 2>&1 | grep -q "mcp.n8nApiUrl is required" \
+            || { echo "::error::wrong error for mcp.n8nApiUrl"; exit 1; }
+          # Each secret key on its own: drop it from the dummy set and expect its
+          # own required() message.
+          check() {
+            key="$1"; msg="$2"
+            set_without=$(echo "$SECRETS" | tr ',' '\n' | grep -v "^$key=" | paste -sd, -)
+            if out=$(helm template n8n-mcp $CHART -n mcp --set "$N8N,$set_without" 2>&1); then
+              echo "::error::$key is not enforced"; exit 1
+            fi
+            echo "$out" | grep -q "$msg" || { echo "::error::wrong error for $key: $out"; exit 1; }
+          }
+          check secrets.n8nApiKey     "secrets.n8nApiKey is required"
+          check secrets.mcpAuthToken  "secrets.mcpAuthToken is required"
+          check proxy.config.pathSecret "proxy.config.pathSecret is required"
+          check proxy.config.authToken  "proxy.config.authToken is required"
+          # A verbatim nginx.conf replaces those two.
+          helm template n8n-mcp $CHART -n mcp --set "$N8N" \
+            --set proxy.config.create=true --set-string proxy.config.nginxConf="events {}" > /dev/null
+          # A multi-port Service needs named ports.
+          if helm template n8n-mcp $CHART -n mcp --set "$N8N" --set mcp.portName= > /dev/null 2>&1; then
+            echo "::error::unnamed ports with a sidecar proxy must fail"; exit 1
+          fi
+          echo "required() guards fire"
+
+      - name: Keep policy, and one object per instance
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'EOF'
+          import glob, sys, yaml
+          bad = []
+          def objs(f): return [d for d in yaml.safe_load_all(open(f)) if d]
+          for f in ("/tmp/r/secrets.yaml", "/tmp/r/bundle.yaml", "/tmp/r/standalone-ns.yaml"):
+              for d in objs(f):
+                  if d["kind"] in ("Namespace", "PersistentVolumeClaim", "Secret", "ConfigMap"):
+                      if (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep":
+                          bad.append(f"{f}: {d['kind']}/{d['metadata']['name']} has no keep policy")
+          for d in objs("/tmp/r/no-keep.yaml"):
+              if (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy"):
+                  bad.append("keepOnUninstall=false must not annotate anything")
+          for f in ("/tmp/r/default.yaml", "/tmp/r/secrets.yaml"):
+              for d in objs(f):
+                  if d["kind"] == "Namespace":
+                      bad.append(f"{f}: the release namespace must never be rendered")
+          # The live instances: exactly the objects that exist today, nothing else.
+          expect = {
+            "/tmp/r/instance-woowtech-odoo.yaml": {
+              "Deployment/n8n-mcp", "Deployment/n8n-mcp-proxy",
+              "Service/n8n-mcp", "Service/n8n-mcp-proxy", "Pod/n8n-mcp-smoke"},
+            "/tmp/r/instance-cindytech.yaml": {
+              "Deployment/cindytech-n8n-mcp", "Service/cindytech-n8n-mcp-svc",
+              "Pod/cindytech-n8n-mcp-smoke"},
+          }
+          for f, want in expect.items():
+              got = {f"{d['kind']}/{d['metadata']['name']}" for d in objs(f)}
+              if got != want:
+                  bad.append(f"{f}: renders {sorted(got)}, expected {sorted(want)}")
+          sys.exit("\n".join(bad)) if bad else print("keep policy and instance objects OK")
+          EOF
+
+      - name: No secrets committed
+        run: |
+          python3 - <<'EOF'
+          import glob, sys, yaml
+          bad = []
+          s = yaml.safe_load(open("charts/n8n-mcp/values.yaml"))
+          for k in ("n8nApiKey", "mcpAuthToken"):
+              if s["secrets"][k]:
+                  bad.append(f"values.yaml secrets.{k} must be empty")
+          for k in ("pathSecret", "authToken", "nginxConf"):
+              if s["proxy"]["config"][k]:
+                  bad.append(f"values.yaml proxy.config.{k} must be empty")
+          if s["tests"]["pathSecret"]:
+              bad.append("values.yaml tests.pathSecret must be empty")
+          if s["secrets"]["create"] or s["proxy"]["config"]["create"]:
+              bad.append("values.yaml must default to secrets.create=false / proxy.config.create=false")
+          for f in glob.glob("deploy/**/*.yaml", recursive=True):
+              v = yaml.safe_load(open(f)) or {}
+              for path in (("secrets", "n8nApiKey"), ("secrets", "mcpAuthToken"),
+                           ("proxy", "config", "pathSecret"), ("proxy", "config", "authToken"),
+                           ("proxy", "config", "nginxConf"), ("tests", "pathSecret")):
+                  node = v
+                  for p in path:
+                      node = (node or {}).get(p) if isinstance(node, dict) else None
+                  if node:
+                      bad.append(f"{f}: secret material does not belong in instance values: {'.'.join(path)}")
+              for section, key in (("secrets", "create"), ):
+                  if (v.get(section) or {}).get(key):
+                      bad.append(f"{f}: {section}.{key} must stay false for a live instance")
+              if ((v.get("proxy") or {}).get("config") or {}).get("create"):
+                  bad.append(f"{f}: proxy.config.create must stay false for a live instance")
+          # Instance renders must not contain any secret-bearing object.
+          for f in ("/tmp/r/instance-woowtech-odoo.yaml", "/tmp/r/instance-cindytech.yaml"):
+              for d in yaml.safe_load_all(open(f)):
+                  if d and d["kind"] in ("Secret", "ConfigMap"):
+                      bad.append(f"{f} must not contain {d['kind']}/{d['metadata']['name']}")
+                  if d and d["kind"] == "Pod":
+                      for e in d["spec"]["containers"][0]["env"]:
+                          if e["name"] == "PATH_SECRET" and e.get("value"):
+                              bad.append(f"{f}: the smoke pod carries a path secret")
+          for d in yaml.safe_load_all(open("charts/n8n-mcp/examples/secrets.example.yaml")):
+              for k, v in ((d or {}).get("stringData") or {}).items():
+                  if "REPLACE_ME" not in str(v):
+                      bad.append(f"examples: {d['metadata']['name']}.{k} is not a placeholder")
+              for k, v in ((d or {}).get("data") or {}).items():
+                  if "REPLACE_ME" not in str(v):
+                      bad.append(f"examples: {d['metadata']['name']}.{k} has no placeholder")
+          sys.exit("\n".join(bad)) if bad else print("no secrets committed")
+          EOF
+
+      - name: The removed kubectl manifest is gone
+        run: |
+          test ! -e k8s-deploy.yaml || { echo "::error::k8s-deploy.yaml is back"; exit 1; }
+          # The READMEs still explain the removal; only the old command must be gone.
+          ! grep -rn "apply -f k8s-deploy.yaml" README.md README_zh-TW.md docs/ \
+            || { echo "::error::docs still tell people to apply k8s-deploy.yaml"; exit 1; }
+          echo "k8s-deploy.yaml removed and unreferenced"
+
+      - name: Shell scripts parse
+        run: bash -n scripts/*.sh

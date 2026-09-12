@@ -1,0 +1,109 @@
+# Instance values for Helm release `n8n-mcp` in namespace woowtech-odoo on
+# woow-k3s (the n8n MCP endpoint behind woowtech-n8n-mcp.woowtech.io).
+#
+# NO SECRETS HERE. secrets.create=false and proxy.config.create=false, so the
+# chart only REFERENCES:
+#   Secret    n8n-secrets           keys N8N_API_KEY, MCP_AUTH_TOKEN
+#   ConfigMap n8n-mcp-proxy-config  key nginx.conf (holds the secret URL path
+#                                   and the bearer token)
+# Both are managed out of band - see charts/n8n-mcp/examples/secrets.example.yaml.
+#
+# These values reproduce the live objects field for field, so a takeover
+# restarts nothing:
+#   helm --kube-context woow-k3s upgrade --install n8n-mcp charts/n8n-mcp \
+#     -n woowtech-odoo -f deploy/woow-k3s/n8n-mcp-woowtech-odoo.yaml --take-ownership
+# Read "Takeover" in charts/n8n-mcp/README.md first.
+
+mode: upstream
+serviceSuffix: ""
+
+namespace:
+  create: false
+  name: ""
+
+keepOnUninstall: true
+
+secrets:
+  create: false
+  # Shared with the n8n release in the same namespace.
+  name: n8n-secrets
+
+mcp:
+  replicas: 1
+  image:
+    repository: ghcr.io/czlonkowski/n8n-mcp
+    tag: latest
+    pullPolicy: Always
+  n8nApiUrl: http://n8n.woowtech-odoo.svc.cluster.local:5678
+  # This pod still carries MCP_AUTH_TOKEN next to AUTH_TOKEN (same Secret key).
+  # Dropping it would rewrite the pod template and restart the pod.
+  legacyMcpAuthTokenEnv: true
+  # The live containerPort is unnamed.
+  portName: ""
+  containerName: n8n-mcp
+  # OFF on purpose: adding probes changes the pod template and would restart the
+  # running pod. Turn on together with the next planned restart (README follow-ups).
+  probes:
+    enabled: false
+  # Same reason: the live container has no securityContext. null (not {}) is
+  # what clears a map default in Helm.
+  securityContext: null
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+proxy:
+  enabled: true
+  # This instance runs nginx as its own Deployment + Service.
+  mode: standalone
+  replicas: 1
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  portName: ""
+  containerName: nginx
+  probes:
+    enabled: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  volumes:
+    configName: config
+    configReadOnly: false
+    emptyDirs: []
+  # Keeps the pod template of the running proxy byte for byte.
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-08-18T23:21:15+08:00"
+  config:
+    create: false
+    name: n8n-mcp-proxy-config
+    # The live nginx.conf has no `location /health` (the smoke test skips it).
+    healthLocation: false
+
+# Keeps the pod template of the running mcp pod byte for byte.
+podAnnotations:
+  kubectl.kubernetes.io/restartedAt: "2026-07-02T00:39:50+08:00"
+# The live pods have an empty pod securityContext and no
+# automountServiceAccountToken field. Hardening them replaces the pod.
+podSecurityContext: null
+automountServiceAccountToken: null
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 25%
+
+tests:
+  enabled: true
+  # The secret path stays out of git: the smoke pod then only checks that the
+  # proxy answers 404 and that the MCP port refuses an unauthenticated call.
+  pathSecret: ""

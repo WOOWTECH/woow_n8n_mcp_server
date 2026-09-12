@@ -1,0 +1,32 @@
+n8n MCP ({{ .Values.mode }} mode) - release {{ .Release.Name }} in namespace {{ include "n8n-mcp.ns" . }}
+
+{{- if eq .Values.mode "upstream" }}
+Server : {{ .Values.mcp.image.repository }}:{{ .Values.mcp.image.tag }} on {{ include "n8n-mcp.serviceName" . }}:{{ .Values.mcp.port }}
+n8n    : {{ .Values.mcp.n8nApiUrl }}
+{{- if .Values.proxy.enabled }}
+Proxy  : {{ include "n8n-mcp.proxyServiceHost" . }}:{{ .Values.proxy.port }} ({{ .Values.proxy.mode }}), upstream {{ include "n8n-mcp.proxyUpstream" . }}
+         The only reachable location is /private_<pathSecret>/ - route THIS port
+         from the tunnel, never {{ .Values.mcp.port }}.
+{{- else }}
+Proxy  : disabled - {{ .Values.mcp.port }} needs the Authorization header itself.
+{{- end }}
+{{- else }}
+Bundle : {{ .Values.bundle.image.repository }}:{{ .Values.bundle.image.tag }} on {{ include "n8n-mcp.serviceName" . }}:{{ .Values.bundle.port }}
+         EXPERIMENTAL. Log in and change the admin password before exposing it.
+{{- end }}
+
+{{- if not .Values.secrets.create }}
+
+Secrets are NOT managed by this release (secrets.create=false): {{ include "n8n-mcp.secretName" . }}
+must already exist with the keys {{ .Values.secrets.keys.n8nApiKey }} and {{ .Values.secrets.keys.mcpAuthToken }}.
+{{- end }}
+{{- if and (eq .Values.mode "upstream") .Values.proxy.enabled (not .Values.proxy.config.create) }}
+The proxy config is NOT managed either: ConfigMap {{ include "n8n-mcp.proxyConfigName" . }} (key nginx.conf)
+must already exist - it carries the secret path and the bearer token.
+{{- end }}
+
+Wait for it:
+  kubectl -n {{ include "n8n-mcp.ns" . }} rollout status deploy/{{ include "n8n-mcp.fullname" . }} --timeout=5m
+
+Verify:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs

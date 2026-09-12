@@ -1,0 +1,160 @@
+{{- /*
+mode=bundle: this repository's own image (admin GUI + MCP proxy + an embedded
+n8n-mcp, one uvicorn process on 8080, config in /data/config.json).
+
+EXPERIMENTAL. Nothing on woow-k3s runs this mode; the image is not published yet
+and the GUI starts with a well-known default password, so keep it unreachable
+from outside until the password has been changed. The PVC is what makes that
+change survive a restart.
+*/ -}}
+{{- if eq .Values.mode "bundle" }}
+{{- $b := .Values.bundle }}
+{{- $labels := include "n8n-mcp.objectLabels" (dict "ctx" . "extra" .Values.mcp.labels) }}
+{{- if $b.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "n8n-mcp.dataPvcName" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- include "n8n-mcp.objectLabels" (dict "ctx" . "extra" (dict)) | nindent 4 }}
+  {{- include "n8n-mcp.keepAnnotations" . | nindent 2 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ default .Values.storageClassName $b.persistence.className }}
+  resources:
+    requests:
+      storage: {{ $b.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "n8n-mcp.fullname" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  replicas: {{ $b.replicas }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "n8n-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "n8n-mcp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if not (kindIs "invalid" .Values.automountServiceAccountToken) }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # An empty pod securityContext is rendered as {} on purpose: the live pods
+      # have the empty field and removing it would replace the pod.
+      securityContext: {{- toYaml (default (dict) .Values.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: admin
+          image: {{ $b.image.repository }}:{{ $b.image.tag }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          env:
+            - name: MCP_ADMIN_CONFIG
+              value: /data/config.json
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with $b.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - containerPort: {{ $b.port }}
+              {{- with $b.portName }}
+              name: {{ . }}
+              {{- end }}
+              protocol: TCP
+          {{- if $b.probes.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ $b.probes.path }}
+              port: {{ $b.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: {{ $b.probes.path }}
+              port: {{ $b.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          {{- end }}
+          {{- with $b.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $b.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: /data
+              name: data
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: data
+          {{- if $b.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "n8n-mcp.dataPvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "n8n-mcp.serviceName" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- include "n8n-mcp.objectLabels" (dict "ctx" . "extra" .Values.service.labels) | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "n8n-mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ $b.port }}
+      {{- with $b.portName }}
+      name: {{ . }}
+      {{- end }}
+      protocol: TCP
+      targetPort: {{ $b.port }}
+{{- end }}
