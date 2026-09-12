@@ -1,0 +1,298 @@
+# Default values for the n8n-mcp chart.
+#
+# One release per instance. Resource names come from the RELEASE NAME, so the
+# live instances keep their names:
+#   helm ... n8n-mcp           -n woowtech-odoo   (Deployments n8n-mcp + n8n-mcp-proxy)
+#   helm ... cindytech-n8n-mcp -n cindytech       (one Deployment, nginx as a sidecar)
+# See deploy/woow-k3s/ for the instance values of everything that runs on
+# woow-k3s. Secret material (n8n API key, MCP auth token, the proxy's secret
+# URL path) NEVER lives in this chart - see examples/secrets.example.yaml.
+
+# upstream = ghcr.io/czlonkowski/n8n-mcp + nginx path-secret proxy (what runs
+#            on woow-k3s).
+# bundle   = this repository's own admin-GUI image, which embeds n8n-mcp and
+#            its own proxy. EXPERIMENTAL: no instance runs it, and the image is
+#            not published yet (see README "mode: bundle").
+mode: upstream
+
+# Base name for every object. "" = the release name.
+fullnameOverride: ""
+# Appended to Service names only. The cindytech instance uses "-svc".
+serviceSuffix: ""
+
+namespace:
+  # An MCP release normally joins the namespace of the app it serves, so the
+  # Namespace is NOT part of this chart by default. A namespace equal to the
+  # release namespace (-n) is never rendered, so `helm uninstall` can never
+  # delete the namespace the release lives in.
+  create: false
+  # "" = the release namespace (-n).
+  name: ""
+
+# Add `helm.sh/resource-policy: keep` to Namespaces, PVCs and chart-created
+# Secrets, so `helm uninstall` never deletes data or the MCP auth token.
+keepOnUninstall: true
+
+# Default StorageClass for every PVC (mode=bundle only).
+# longhorn = reclaimPolicy Retain on woow-k3s.
+storageClassName: longhorn
+
+# Labels merged into every object's metadata.labels.
+commonLabels: {}
+# Pod-template labels AND the Deployment/Service selector. IMMUTABLE: changing
+# these replaces the Deployment. "" = {app: <fullname>}.
+selectorLabels: {}
+
+imagePullSecrets: []
+
+secrets:
+  # false (default): the Secret already exists (see examples/secrets.example.yaml)
+  #   and the chart never renders it, so an upgrade cannot overwrite a real key.
+  # true: render it from the values below (fresh installs, tests).
+  create: false
+  # Name of the Secret holding the n8n API key and the MCP auth token.
+  # "" = <fullname>-secrets.
+  name: ""
+  # Key names inside that Secret.
+  keys:
+    n8nApiKey: N8N_API_KEY
+    mcpAuthToken: MCP_AUTH_TOKEN
+  # Only used with create=true. Never commit real values.
+  n8nApiKey: ""
+  mcpAuthToken: ""
+
+mcp:
+  replicas: 1
+  image:
+    repository: ghcr.io/czlonkowski/n8n-mcp
+    tag: latest
+    pullPolicy: Always
+  # n8n REST API base URL, e.g. http://n8n.<ns>.svc.cluster.local:5678
+  # required: the server starts without it but every management tool fails.
+  n8nApiUrl: ""
+  # n8n-mcp runtime settings (env of the upstream image).
+  serverMode: http
+  nodeEnv: production
+  webhookSecurityMode: permissive
+  sessionTimeout: 30
+  maxSessions: 50
+  authRateLimit:
+    enabled: true
+    max: 200
+    # milliseconds
+    windowMs: 60000
+  # The image reads AUTH_TOKEN. The woowtech-odoo instance also carries the
+  # older MCP_AUTH_TOKEN env; keep it true there so its pod template is
+  # unchanged (the value is identical, it is a second reference to the same key).
+  legacyMcpAuthTokenEnv: false
+  # Appended verbatim after the settings above ({name,value} / {name,valueFrom}).
+  extraEnv: []
+  port: 3000
+  # "" = an unnamed containerPort (the woowtech-odoo instance).
+  portName: mcp
+  containerName: n8n-mcp
+  probes:
+    # Off in deploy/woow-k3s/n8n-mcp-woowtech-odoo.yaml: adding probes rewrites
+    # that pod template and would restart the running pod. See README follow-ups.
+    enabled: true
+    liveness:
+      tcpSocket:
+        port: 3000
+      initialDelaySeconds: 15
+      periodSeconds: 30
+      timeoutSeconds: 5
+    readiness:
+      tcpSocket:
+        port: 3000
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+    startup:
+      tcpSocket:
+        port: 3000
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 30
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Extra labels on the mcp Deployment metadata (merged with commonLabels).
+  labels: {}
+
+proxy:
+  # nginx in front of the MCP server: the only reachable location is the secret
+  # path, and nginx adds the Authorization header, so the token never leaves
+  # the cluster.
+  enabled: true
+  # sidecar    = second container in the mcp pod (proxies to 127.0.0.1).
+  # standalone = its own Deployment + Service (proxies to the mcp Service).
+  mode: sidecar
+  replicas: 1
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  port: 3001
+  # "" = an unnamed containerPort (the woowtech-odoo instance).
+  portName: proxy
+  # The standalone Deployment of the woowtech-odoo instance calls it "nginx".
+  containerName: n8n-mcp-proxy
+  # Appended to the nginx container. nginx ignores them; the cindytech instance
+  # carries AUTH_RATE_LIMIT_* here because `kubectl set env --all` added them to
+  # every container, and dropping them would restart the pod.
+  extraEnv: []
+  volumes:
+    # Volume names are part of the pod template: renaming one restarts the pod.
+    configName: nginx-config
+    configReadOnly: true
+    # Writable paths nginx needs when the image runs unprivileged.
+    emptyDirs:
+      - name: nginx-cache
+        mountPath: /var/cache/nginx
+      - name: nginx-run
+        mountPath: /var/run
+  config:
+    # false (default): the ConfigMap with nginx.conf already exists - it holds
+    #   the secret URL path and the bearer token, so it is created out of band
+    #   (examples/secrets.example.yaml) and is never rendered or overwritten.
+    # true: render it from the values below (fresh installs, tests).
+    create: false
+    # "" = <fullname>-proxy-config
+    name: ""
+    # Only used with create=true. SECRET - never commit these.
+    # The public URL becomes https://<host>/private_<pathSecret>/mcp
+    pathSecret: ""
+    # Bearer token nginx sends upstream; must equal the MCP auth token.
+    authToken: ""
+    # "" = 127.0.0.1:<mcp.port> (sidecar) or <mcp Service>:<mcp.port> (standalone)
+    upstream: ""
+    clientMaxBodySize: 50m
+    proxyTimeout: 86400s
+    # `location /health` returning 200. Needed by the sidecar's probes.
+    healthLocation: true
+    # Verbatim nginx.conf. Set to reproduce a hand-written config byte for byte;
+    # every other config.* value is then ignored (pathSecret/authToken are still
+    # required so the smoke test can reach the endpoint).
+    nginxConf: ""
+  probes:
+    enabled: true
+    liveness:
+      httpGet:
+        path: /health
+        port: 3001
+      initialDelaySeconds: 5
+      periodSeconds: 30
+      timeoutSeconds: 3
+    readiness:
+      httpGet:
+        path: /health
+        port: 3001
+      initialDelaySeconds: 3
+      periodSeconds: 10
+      timeoutSeconds: 3
+  securityContext: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+  # Only used with mode=standalone.
+  labels: {}
+  selectorLabels: {}
+  podAnnotations: {}
+  podLabels: {}
+
+# Pod-level settings of the mcp pod (which holds the proxy sidecar).
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  fsGroup: 1000
+# null = leave the field out (the woowtech-odoo instance).
+automountServiceAccountToken: false
+nodeSelector: {}
+tolerations: []
+affinity: {}
+strategy:
+  type: Recreate
+# Restated on purpose (they equal the API-server defaults): a takeover patch that
+# removed them would bump metadata.generation for nothing.
+progressDeadlineSeconds: 600
+revisionHistoryLimit: 10
+
+service:
+  type: ClusterIP
+  # Extra labels on the Service metadata (merged with commonLabels).
+  labels: {}
+  annotations: {}
+
+# mode=bundle only: this repository's admin GUI + embedded n8n-mcp + proxy.
+bundle:
+  image:
+    # Built from this repository's Dockerfile. NOT published yet - build and
+    # push it before enabling this mode.
+    repository: ghcr.io/woowtech/n8n-mcp-admin
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # uvicorn port from the Dockerfile.
+  port: 8080
+  portName: http
+  # /data holds config.json: the admin password, the MCP token and the n8n
+  # connection. Without it every pod restart falls back to the default password.
+  persistence:
+    enabled: true
+    # "" = storageClassName
+    className: ""
+    size: 1Gi
+    # "" = <fullname>-data
+    name: ""
+  probes:
+    enabled: true
+    path: /healthz
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  extraEnv: []
+
+tests:
+  # `helm test` smoke pod. Read-only: nginx answers, the secret path proxies an
+  # MCP `initialize` call, and any other path is a 404.
+  enabled: true
+  # "" = proxy.config.pathSecret. Needed to test through the secret path when
+  # the ConfigMap is managed out of band (proxy.config.create=false); leave it
+  # empty there and the smoke pod only checks the 404 and the MCP port.
+  # It lands in the smoke Pod spec, so NEVER put a production path secret here.
+  pathSecret: ""
+  # Health path of the n8n-mcp server itself (upstream serves /health).
+  mcpHealthPath: /health
+  # Check `location /health` on the proxy. Follow proxy.config.healthLocation:
+  # the woowtech-odoo config has no such location.
+  proxyHealth: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

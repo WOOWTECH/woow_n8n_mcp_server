@@ -1,0 +1,93 @@
+{{- /*
+The n8n-mcp server (upstream image). With proxy.mode=sidecar nginx is a second
+container in this pod, so the token never crosses a pod boundary.
+*/ -}}
+{{- if eq .Values.mode "upstream" }}
+{{- $labels := include "n8n-mcp.objectLabels" (dict "ctx" . "extra" .Values.mcp.labels) }}
+{{- $sidecar := include "n8n-mcp.proxyIsSidecar" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "n8n-mcp.fullname" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  replicas: {{ .Values.mcp.replicas }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "n8n-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "n8n-mcp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if not (kindIs "invalid" .Values.automountServiceAccountToken) }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # An empty pod securityContext is rendered as {} on purpose: the live pods
+      # have the empty field and removing it would replace the pod.
+      securityContext: {{- toYaml (default (dict) .Values.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: {{ .Values.mcp.containerName }}
+          image: {{ .Values.mcp.image.repository }}:{{ .Values.mcp.image.tag }}
+          imagePullPolicy: {{ .Values.mcp.image.pullPolicy }}
+          env:
+            {{- include "n8n-mcp.mcpEnv" . | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.mcp.port }}
+              {{- with .Values.mcp.portName }}
+              name: {{ . }}
+              {{- end }}
+              protocol: TCP
+          {{- if .Values.mcp.probes.enabled }}
+          livenessProbe:
+            {{- toYaml .Values.mcp.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.mcp.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.mcp.probes.startup | nindent 12 }}
+          {{- end }}
+          {{- with .Values.mcp.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.mcp.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- if $sidecar }}
+        {{- include "n8n-mcp.proxyContainer" . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      {{- if $sidecar }}
+      {{- include "n8n-mcp.proxyVolumes" . | nindent 6 }}
+      {{- end }}
+{{- end }}

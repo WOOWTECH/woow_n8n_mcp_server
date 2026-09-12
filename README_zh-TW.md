@@ -342,26 +342,36 @@ docker compose up -d
 docker compose logs -f mcp-admin
 ```
 
-### 方式四：Kubernetes
+### 方式四：Kubernetes（Helm chart）
 
-部署至 K8s 叢集：
+Kubernetes 部署已改為 Helm chart：**[`charts/n8n-mcp`](charts/n8n-mcp/README_zh-TW.md)**
+（[English](charts/n8n-mcp/README.md)）。每個實例一個 release。
 
 ```bash
-# 套用資源清單
-kubectl apply -f k8s-deploy.yaml
+# 上游 MCP server + nginx 祕密路徑代理（woow-k3s 上就是這個）
+helm install my-n8n-mcp charts/n8n-mcp -n my-ns --create-namespace \
+  --set mcp.n8nApiUrl=http://n8n.my-ns.svc.cluster.local:5678 \
+  --set secrets.create=true --set secrets.n8nApiKey="$N8N_API_KEY" \
+  --set secrets.mcpAuthToken="$TOKEN" \
+  --set proxy.config.create=true \
+  --set proxy.config.pathSecret="$(openssl rand -hex 10)" \
+  --set proxy.config.authToken="$TOKEN"
 
-# 驗證部署
-kubectl get pods -n kasim-odoo -l app=n8n-mcp-admin
+# 改用本 repo 的 bundle 映像（實驗性，詳見 chart README）
+helm install my-n8n-mcp charts/n8n-mcp -n my-ns --set mode=bundle \
+  --set mcp.n8nApiUrl=http://n8n.my-ns.svc.cluster.local:5678
 
-# 連接埠轉發用於本機存取
-kubectl port-forward -n kasim-odoo svc/n8n-mcp-admin-svc 9002:9002
+helm test my-n8n-mcp -n my-ns --logs
 ```
 
-K8s 資源清單包含：
-- RBAC（ServiceAccount、Role、RoleBinding）用於命名空間範圍的 Secret/ConfigMap 存取
-- 含健康探測（就緒 + 存活）的 Deployment
-- 資源限制（100m-500m CPU、128Mi-512Mi RAM）
-- 控制平面節點選擇器
+chart 涵蓋：上游 `n8n-mcp` server、nginx 祕密路徑代理（sidecar 或獨立
+Deployment）、機密資料只引用不寫進 template、`helm.sh/resource-policy: keep`
+讓卸載不刪資料、唯讀的 `helm test` 煙霧測試 pod，以及 woow-k3s 的各實例 values
+（[`deploy/woow-k3s/`](deploy/woow-k3s)）。
+
+舊的 `k8s-deploy.yaml`（namespace 寫死 `kasim-odoo`、使用私有 registry 映像、Role
+可讀寫該 namespace 全部 Secret）已移除——詳見 chart README 的「從 k8s-deploy.yaml
+遷移」。
 
 ### 方式五：開發模式
 
@@ -808,7 +818,9 @@ woow_n8n_mcp_server/
 │
 ├── Dockerfile                   # 多階段容器建置
 ├── docker-compose.yml           # 完整堆疊（PostgreSQL + n8n + Admin）
-├── k8s-deploy.yaml              # Kubernetes 部署資源清單
+├── charts/n8n-mcp/              # Helm chart（upstream 與 bundle 模式）
+├── deploy/woow-k3s/             # 各實例 values，不含機密
+├── scripts/check-drift.sh       # repo 對 release 對叢集
 ├── pyproject.toml               # 核心 Python 套件設定
 ├── n8n_pyproject.toml           # n8n 管理 Python 套件設定
 ├── LICENSE                      # MIT 授權

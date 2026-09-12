@@ -3,7 +3,25 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
-.env
-.env.local
 *.egg-info/
 /data/
+
+# Real secret material must never be committed - only
+# charts/n8n-mcp/examples/secrets.example.yaml (placeholders).
+# Every pattern is ANCHORED with a leading "/" on purpose: an unanchored
+# "secrets.yaml" also matches charts/n8n-mcp/templates/secrets.yaml and would
+# silently keep that template out of git.
+.env
+.env.*
+*.env
+/secrets.yaml
+/*-secrets.yaml
+/*.secret.yaml
+/*secrets.values.yaml
+/*.local.yaml
+/nginx.conf
+!/charts/n8n-mcp/templates/secrets.yaml
+!/charts/n8n-mcp/examples/secrets.example.yaml
+
+# Packaged charts
+*.tgz

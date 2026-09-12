@@ -1,0 +1,21 @@
+{{- /*
+nginx.conf for the path-secret proxy, rendered only with
+proxy.config.create=true. It contains the secret URL path and the bearer token,
+so by default it is created out of band (examples/secrets.example.yaml) and this
+chart only references it by name - an upgrade can then never leak or overwrite
+it. Not annotated `keep`: with create=true the ConfigMap belongs to the release.
+*/ -}}
+{{- if and (eq .Values.mode "upstream") .Values.proxy.enabled .Values.proxy.config.create }}
+{{- $labels := include "n8n-mcp.objectLabels" (dict "ctx" . "extra" (dict)) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "n8n-mcp.proxyConfigName" . }}
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+  {{- include "n8n-mcp.keepAnnotations" . | nindent 2 }}
+data:
+  nginx.conf: |
+    {{- include "n8n-mcp.nginxConf" . | nindent 4 }}
+{{- end }}

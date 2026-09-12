@@ -1,0 +1,109 @@
+# Instance values for Helm release `cindytech-n8n-mcp` in namespace cindytech on
+# woow-k3s (nginx runs as a sidecar in the MCP pod).
+#
+# NO SECRETS HERE. The chart only REFERENCES:
+#   Secret    cindytech-n8n-secrets           keys N8N_API_KEY, MCP_AUTH_TOKEN
+#   ConfigMap cindytech-n8n-mcp-proxy-config  key nginx.conf (secret URL path +
+#                                             bearer token)
+# Takeover (restarts nothing - see charts/n8n-mcp/README.md):
+#   helm --kube-context woow-k3s upgrade --install cindytech-n8n-mcp charts/n8n-mcp \
+#     -n cindytech -f deploy/woow-k3s/cindytech-n8n-mcp.yaml --take-ownership
+
+mode: upstream
+# The live Service is cindytech-n8n-mcp-svc.
+serviceSuffix: "-svc"
+
+namespace:
+  create: false
+  name: ""
+
+keepOnUninstall: true
+
+# On every object of this release.
+commonLabels:
+  app.kubernetes.io/component: mcp-n8n
+  app.kubernetes.io/part-of: cindytech
+  # app.kubernetes.io/managed-by is NOT listed: the live objects carry
+  # "kubectl", and Helm overwrites that label with "Helm" on every object it
+  # manages. Metadata only - it changes no pod template.
+# Pod template + Deployment/Service selector. IMMUTABLE.
+selectorLabels:
+  app.kubernetes.io/component: mcp-n8n
+  app.kubernetes.io/name: cindytech
+
+secrets:
+  create: false
+  name: cindytech-n8n-secrets
+
+mcp:
+  replicas: 1
+  image:
+    repository: ghcr.io/czlonkowski/n8n-mcp
+    tag: latest
+    pullPolicy: Always
+  # This instance talks to n8n through the public hostname.
+  n8nApiUrl: https://cindytech1-n8n.woowtech.io
+  legacyMcpAuthTokenEnv: false
+  portName: mcp
+  containerName: n8n-mcp
+  probes:
+    enabled: true
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Only on the Deployment, not on the Service.
+  labels:
+    app.kubernetes.io/name: cindytech
+
+proxy:
+  enabled: true
+  mode: sidecar
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  portName: proxy
+  containerName: n8n-mcp-proxy
+  probes:
+    enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+  # `kubectl set env --all` added these to the nginx container too. nginx
+  # ignores them; removing them would restart the pod.
+  extraEnv:
+    - name: AUTH_RATE_LIMIT_MAX
+      value: "200"
+    - name: AUTH_RATE_LIMIT_WINDOW
+      value: "60000"
+  config:
+    create: false
+    name: cindytech-n8n-mcp-proxy-config
+    healthLocation: true
+
+podAnnotations:
+  kubectl.kubernetes.io/restartedAt: "2026-08-18T16:53:02+08:00"
+podSecurityContext:
+  fsGroup: 1000
+automountServiceAccountToken: false
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+strategy:
+  type: Recreate
+
+tests:
+  enabled: true
+  pathSecret: ""

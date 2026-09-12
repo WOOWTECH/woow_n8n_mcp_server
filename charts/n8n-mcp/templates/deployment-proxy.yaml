@@ -1,0 +1,63 @@
+{{- /*
+The nginx path-secret proxy as its own Deployment + Service
+(proxy.mode=standalone, how the woowtech-odoo instance runs). It proxies to the
+mcp Service, so the bearer token crosses the pod boundary inside the namespace.
+Prefer proxy.mode=sidecar for new instances.
+*/ -}}
+{{- if and (eq .Values.mode "upstream") .Values.proxy.enabled (eq .Values.proxy.mode "standalone") }}
+{{- $labels := include "n8n-mcp.objectLabels" (dict "ctx" . "extra" .Values.proxy.labels) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "n8n-mcp.fullname" . }}-proxy
+  namespace: {{ include "n8n-mcp.ns" . }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  replicas: {{ .Values.proxy.replicas }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "n8n-mcp.proxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.proxy.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "n8n-mcp.proxySelectorLabels" . | nindent 8 }}
+        {{- with .Values.proxy.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if not (kindIs "invalid" .Values.automountServiceAccountToken) }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # An empty pod securityContext is rendered as {} on purpose: the live pods
+      # have the empty field and removing it would replace the pod.
+      securityContext: {{- toYaml (default (dict) .Values.podSecurityContext) | nindent 8 }}
+      containers:
+        {{- include "n8n-mcp.proxyContainer" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      {{- include "n8n-mcp.proxyVolumes" . | nindent 6 }}
+{{- end }}

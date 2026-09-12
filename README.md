@@ -379,26 +379,37 @@ docker compose up -d
 docker compose logs -f mcp-admin
 ```
 
-### Option 4: Kubernetes
+### Option 4: Kubernetes (Helm chart)
 
-Deploy to a K8s cluster:
+Kubernetes deployment is a Helm chart: **[`charts/n8n-mcp`](charts/n8n-mcp/README.md)**
+([繁體中文](charts/n8n-mcp/README_zh-TW.md)). One release per instance.
 
 ```bash
-# Apply the manifests
-kubectl apply -f k8s-deploy.yaml
+# The upstream MCP server behind the nginx path-secret proxy (what runs on woow-k3s)
+helm install my-n8n-mcp charts/n8n-mcp -n my-ns --create-namespace \
+  --set mcp.n8nApiUrl=http://n8n.my-ns.svc.cluster.local:5678 \
+  --set secrets.create=true --set secrets.n8nApiKey="$N8N_API_KEY" \
+  --set secrets.mcpAuthToken="$TOKEN" \
+  --set proxy.config.create=true \
+  --set proxy.config.pathSecret="$(openssl rand -hex 10)" \
+  --set proxy.config.authToken="$TOKEN"
 
-# Verify deployment
-kubectl get pods -n kasim-odoo -l app=n8n-mcp-admin
+# This bundle image instead of the upstream server (experimental, see the chart README)
+helm install my-n8n-mcp charts/n8n-mcp -n my-ns --set mode=bundle \
+  --set mcp.n8nApiUrl=http://n8n.my-ns.svc.cluster.local:5678
 
-# Port-forward for local access
-kubectl port-forward -n kasim-odoo svc/n8n-mcp-admin-svc 9002:9002
+helm test my-n8n-mcp -n my-ns --logs
 ```
 
-The K8s manifest includes:
-- RBAC (ServiceAccount, Role, RoleBinding) for namespace-scoped Secret/ConfigMap access
-- Deployment with health probes (readiness + liveness)
-- Resource limits (100m-500m CPU, 128Mi-512Mi RAM)
-- Control-plane node selector
+The chart covers: the upstream `n8n-mcp` server, the nginx path-secret proxy
+(sidecar or its own Deployment), secret material referenced rather than
+templated, `helm.sh/resource-policy: keep` so uninstall keeps data, a read-only
+`helm test` smoke pod, and per-instance values for woow-k3s in
+[`deploy/woow-k3s/`](deploy/woow-k3s).
+
+The old `k8s-deploy.yaml` (hardcoded to the `kasim-odoo` namespace, with a
+private-registry image and a Role over every Secret in that namespace) has been
+removed - see "Migrating from k8s-deploy.yaml" in the chart README.
 
 ### Option 5: Development Mode
 
@@ -852,7 +863,9 @@ woow_n8n_mcp_server/
 │
 ├── Dockerfile                   # Multi-stage container build
 ├── docker-compose.yml           # Full stack (PostgreSQL + n8n + Admin)
-├── k8s-deploy.yaml              # Kubernetes deployment manifests
+├── charts/n8n-mcp/              # Helm chart (upstream + bundle modes)
+├── deploy/woow-k3s/             # per-instance values, no secrets
+├── scripts/check-drift.sh       # repo vs release vs cluster
 ├── pyproject.toml               # Core Python package config
 ├── n8n_pyproject.toml           # n8n admin Python package config
 ├── LICENSE                      # MIT License
