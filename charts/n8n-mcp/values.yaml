@@ -279,6 +279,14 @@ tests:
   # `helm test` smoke pod. Read-only: nginx answers, the secret path proxies an
   # MCP `initialize` call, and any other path is a 404.
   enabled: true
+  # How long the smoke pod keeps retrying a request that fails at the NETWORK
+  # level before giving up. A brand-new pod cannot reach a Service ClusterIP for
+  # the first few seconds of its life while the route is programmed for it, which
+  # shows up as `TypeError: fetch failed`; both woow-k3s instances hit exactly
+  # that on the first run after their 2026-09-13 takeover and passed on a plain
+  # re-run. An unexpected STATUS still fails immediately - only an unreachable
+  # endpoint is retried. Keep `helm test --timeout` above this.
+  timeoutSeconds: 120
   # "" = proxy.config.pathSecret. Needed to test through the secret path when
   # the ConfigMap is managed out of band (proxy.config.create=false); leave it
   # empty there and the smoke pod only checks the 404 and the MCP port.

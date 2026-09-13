@@ -35,9 +35,31 @@ spec:
           const proxy = `http://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
           const secret = process.env.PATH_SECRET || "";
           const ok = [];
+          // Retry only on a NETWORK-level failure, never on an unexpected
+          // status - a wrong status is a real defect and must fail at once.
+          // A pod this short-lived can start before the route to a Service
+          // ClusterIP is programmed for it, which surfaces here as
+          // `TypeError: fetch failed`. Measured on woow-k3s 2026-09-13: both
+          // instances failed this test on the first run straight after their
+          // takeover and passed on a plain re-run, with the MCP healthy and
+          // serving the whole time. A single-attempt test therefore reports a
+          // false failure exactly when `helm test` is most likely to be run.
+          const deadline = Date.now() + {{ .Values.tests.timeoutSeconds }} * 1000;
+          const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
           const req = async (url, init) => {
-            const r = await fetch(url, init);
-            return { status: r.status, body: await r.text() };
+            for (let attempt = 1; ; attempt++) {
+              try {
+                const r = await fetch(url, init);
+                return { status: r.status, body: await r.text() };
+              } catch (e) {
+                if (Date.now() >= deadline) {
+                  throw new Error(`${url} unreachable after ${attempt} attempts ` +
+                                  `in {{ .Values.tests.timeoutSeconds }}s: ${e.message}`);
+                }
+                if (attempt % 6 === 1) console.log(`attempt ${attempt}: ${url} not answering yet, retrying`);
+                await sleep(5000);
+              }
+            }
           };
           const initialize = {
             jsonrpc: "2.0", id: 1, method: "initialize",

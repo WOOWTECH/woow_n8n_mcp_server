@@ -54,6 +54,18 @@ jobs:
           # No proxy at all.
           helm template n8n-mcp $CHART -n mcp --set "$N8N,$SECRETS" \
             --set proxy.enabled=false                          > /tmp/r/no-proxy.yaml
+          # The smoke pod must keep retrying an unreachable endpoint. Without
+          # this, a brand-new test pod that cannot yet route to the Service
+          # ClusterIP reports `TypeError: fetch failed` as a real failure - it
+          # did so on both live instances on 2026-09-13, and both passed on a
+          # plain re-run.
+          for f in /tmp/r/instance-woowtech-odoo.yaml /tmp/r/instance-cindytech.yaml; do
+            grep -q 'not answering yet, retrying' "$f" || {
+              echo "::error::$f: the smoke test lost its network-level retry"; exit 1; }
+          done
+          # And the retry must never swallow a wrong status.
+          grep -q 'expected 404, got' /tmp/r/instance-cindytech.yaml || {
+            echo "::error::smoke test no longer asserts the proxy 404"; exit 1; }
           # This repository's own image.
           helm template n8n-mcp $CHART -n mcp --set "$N8N,mode=bundle" > /tmp/r/bundle.yaml
           helm template n8n-mcp $CHART -n mcp --set "$N8N,mode=bundle" \

@@ -6,7 +6,7 @@ description: >-
   per instance. Optionally (mode=bundle) this repository's own admin-GUI image
   instead of the upstream server.
 type: application
-version: 1.0.0
+version: 1.1.0
 appVersion: "latest"
 kubeVersion: ">=1.27.0-0"
 keywords:
