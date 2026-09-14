@@ -1,0 +1,109 @@
+# Instance values for Helm release `torchmedia-n8n-mcp` in namespace torchmedia
+# on woow-k3s. nginx runs as its OWN Deployment here (standalone), like the
+# woowtech-odoo instance and unlike cindytech's sidecar.
+#
+# NO SECRETS HERE. The chart only REFERENCES:
+#   Secret    torchmedia-n8n-secrets            keys N8N_API_KEY, MCP_AUTH_TOKEN
+#   ConfigMap torchmedia-n8n-mcp-proxy-config   key nginx.conf (secret URL path
+#                                               + bearer token)
+#
+# Takeover (restarts nothing):
+#   helm --kube-context woow-k3s upgrade --install torchmedia-n8n-mcp \
+#     charts/n8n-mcp -n torchmedia -f deploy/woow-k3s/torchmedia-n8n-mcp.yaml \
+#     --take-ownership
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+mode: upstream
+fullnameOverride: torchmedia-n8n-mcp
+# The live Services are torchmedia-n8n-mcp and torchmedia-n8n-mcp-proxy, with
+# no suffix.
+serviceSuffix: ""
+
+namespace:
+  create: false
+  name: ""
+
+keepOnUninstall: true
+
+# The live objects carry only `app: <name>` - no app.kubernetes.io labels at
+# all, unlike the other two instances. The selector is IMMUTABLE.
+commonLabels: {}
+selectorLabels:
+  app: torchmedia-n8n-mcp
+
+secrets:
+  create: false
+  name: torchmedia-n8n-secrets
+
+mcp:
+  replicas: 1
+  image:
+    repository: ghcr.io/czlonkowski/n8n-mcp
+    tag: latest
+    pullPolicy: Always
+  # Talks to n8n through the in-cluster Service.
+  n8nApiUrl: http://torchmedia-n8n.torchmedia.svc.cluster.local:5678
+  # Emits AUTH_TOKEN alongside MCP_AUTH_TOKEN, which the live pod has.
+  legacyMcpAuthTokenEnv: true
+  port: 3000
+  # The live containerPort has no name.
+  portName: ""
+  containerName: n8n-mcp
+  probes:
+    enabled: false
+  securityContext: null
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  labels: {}
+
+proxy:
+  enabled: true
+  # Its own Deployment and Service, proxying to the MCP Service.
+  mode: standalone
+  replicas: 1
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  port: 3001
+  portName: ""
+  containerName: nginx
+  probes:
+    enabled: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  volumes:
+    configName: config
+    configReadOnly: false
+    emptyDirs: []
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-07-21T07:03:11+08:00"
+  config:
+    create: false
+    name: torchmedia-n8n-mcp-proxy-config
+    healthLocation: false
+
+podAnnotations:
+  kubectl.kubernetes.io/restartedAt: "2026-06-29T15:18:42+08:00"
+podSecurityContext: null
+automountServiceAccountToken: null
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 25%
+
+tests:
+  enabled: true
+  pathSecret: ""
